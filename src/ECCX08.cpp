@@ -237,18 +237,26 @@ int ECCX08Class::ecdsaVerify(const byte message[], const byte signature[], const
   return 1;
 }
 
+/*
+  Sign the 32 byte digest in message[] with the private key held in slot.
+
+  The digest is loaded into TempKey with a pass-through Nonce and then signed in
+  external message mode. That requires the slot's KeyConfig.ReqRandom to be 0: with
+  ReqRandom set, the device will only sign a TempKey it derived from its own RNG
+  output, so an externally agreed digest cannot be signed at all.
+
+  The discarded Random command that used to open this function has been removed. It
+  fed nothing: the pass-through Nonce below overwrites TempKey either way, and it
+  does not satisfy ReqRandom, which needs Nonce in random mode instead.
+*/
 int ECCX08Class::ecSign(int slot, const byte message[], byte signature[])
 {
-  byte rand[32];
-
-  if (!random(rand, sizeof(rand))) {
-    return 0;
-  }
-
+  // Load the digest to be signed into TempKey.
   if (!challenge(message)) {
     return 0;
   }
 
+  // Sign the contents of TempKey with the slot's private key.
   if (!sign(slot, signature)) {
     return 0;
   }
@@ -262,7 +270,7 @@ int ECCX08Class::SHA256(const uint8_t *buffer, size_t size, uint8_t *digest)
   uint8_t * cursor = (uint8_t*)buffer;
   uint32_t bytes_read = 0;
 
-  for(; bytes_read + 64 < size; bytes_read += 64, cursor += 64) {
+  for(; bytes_read + 64 <= size; bytes_read += 64, cursor += 64) {
     updateSHA256(cursor);
   }
   return endSHA256(cursor, size - bytes_read, digest);
@@ -758,7 +766,8 @@ int ECCX08Class::verify(const byte signature[], const byte pubkey[])
     return 0;
   }
 
-  delay(72);
+  // Verify takes up to 295 ms.
+  delay(300);
 
   if (!receiveResponse(&status, sizeof(status))) {
     return 0;
@@ -784,7 +793,8 @@ int ECCX08Class::sign(int slot, byte signature[])
     return 0;
   }
 
-  delay(70);
+  // Sign takes up to 220 ms.
+  delay(230);
 
   if (!receiveResponse(signature, 64)) {
     return 0;
