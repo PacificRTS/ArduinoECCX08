@@ -575,6 +575,132 @@ int ECCX08Class::nonce(const byte data[])
   return challenge(data);
 }
 
+int ECCX08Class::generateEphemeralPublicKey(byte publicKey[])
+{
+  if (!wakeup()) {
+    return 0;
+  }
+
+  if (!sendCommand(0x40, 0x04, 0xFFFF)) {
+    idle();
+    return 0;
+  }
+
+  // GenKey is relatively slow: 215 ms worst case.
+  delay(220);
+
+  if (!receiveResponse(publicKey, 64)) {
+    idle();
+    return 0;
+  }
+
+  delay(1);
+  idle();
+
+  return 1;
+}
+
+int ECCX08Class::ecdh(int slot, const byte peerPublicKey[], byte sharedSecret[])
+{
+  if (slot < 0 || slot > 15) {
+    return 0;
+  }
+
+  if (!wakeup()) {
+    return 0;
+  }
+
+  if (!sendCommand(0x43, 0x0C, (uint16_t)slot, peerPublicKey, 64)) {
+    idle();
+    return 0;
+  }
+
+  // ECDH takes up to 172 ms.
+  delay(180);
+
+  if (!receiveResponse(sharedSecret, 32)) {
+    idle();
+    return 0;
+  }
+
+  delay(1);
+  idle();
+
+  return 1;
+}
+
+int ECCX08Class::ecdhTempKey( const byte peerPublicKey[], byte sharedSecret[])
+{
+  if (!wakeup()) {
+    return 0;
+  }
+
+  if (!sendCommand(0x43, 0x0D, 0x0000, peerPublicKey, 64)) {
+    idle();
+    return 0;
+  }
+
+  // ECDH takes up to 172 ms.
+  delay(180);
+
+  if (!receiveResponse(sharedSecret, 32)) {
+    idle();
+    return 0;
+  }
+
+  delay(1);
+  idle();
+
+  return 1;
+}
+
+int ECCX08Class::kdf(uint16_t keySlot, const byte message[], byte outputData[], size_t messageLength, uint8_t mode)
+{
+  if (keySlot > 15) {
+    return 0;
+  }
+
+  // The message length is encoded in the MSB of Details, so it must fit in a byte,
+  // and the message itself has to fit in the data field of the KDF command.
+  if (message == NULL || messageLength == 0 || messageLength > 128) {
+    return 0;
+  }
+
+  if (!wakeup()) {
+    return 0;
+  }
+
+  byte data[4 + 128];
+
+  // Details[0..2]: algorithm specific options. For HKDF, bits 0-1 select where the
+  // message lives; 0x02 = "in the input parameter", i.e. the bytes appended below.
+  data[0] = 0x02;
+  data[1] = 0x00;
+  data[2] = 0x00;
+  // Details[3]: the message length in bytes, for every algorithm except AES.
+  data[3] = (byte)messageLength;
+
+  memcpy(&data[4], message, messageLength);
+
+  if (!sendCommand(0x56, mode, keySlot, data, 4 + messageLength)) {
+    idle();
+    return 0;
+  }
+
+  // KDF is the slowest command on the device: 165 ms worst case.
+  delay(170);
+
+  if (!receiveResponse(outputData, 32)) {
+    idle();
+    return 0;
+  }
+
+  delay(1);
+  idle();
+
+  return 1;
+}
+
 int ECCX08Class::incrementCounter(int counterId, long& counter)
 {
   if (counterId < 0 || counterId > 1) {

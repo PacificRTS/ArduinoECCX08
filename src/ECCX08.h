@@ -68,6 +68,12 @@ public:
 
   int nonce(const byte data[]);
 
+  int generateEphemeralPublicKey(byte publicKey[]);
+  int ecdh(int slot, const byte peerPublicKey[], byte sharedSecret[]);
+  int ecdhTempKey(const byte peerPublicKey[], byte sharedSecret[]);
+  int kdf(uint16_t keySlot, const byte message[], byte outputData[],
+          size_t messageLength = 32, uint8_t mode = 0x52);
+
   int incrementCounter(int counterId, long& counter);
   long incrementCounter(int counterId);
   int readCounter(int counterId, long& counter);
