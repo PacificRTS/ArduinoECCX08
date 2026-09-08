@@ -60,6 +60,9 @@ public:
   int writeConfiguration(const byte data[]=ECCX08_DEFAULT_TLS_CONFIG);
   int readConfiguration(byte data[]);
   int lock();
+  int lockConfigZone();
+  int lockDataZone();
+  int lockSlot(int slot);
 
   int beginHMAC(uint16_t keySlot);
   int updateHMAC(const byte data[], int length);
@@ -91,7 +94,7 @@ private:
 
   int read(int zone, int address, byte buffer[], int length);
   int write(int zone, int address, const byte buffer[], int length);
-  int lock(int zone);
+  int lock(int mode);
 
   int addressForSlotOffset(int slot, int offset);
 

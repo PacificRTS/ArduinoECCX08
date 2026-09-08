@@ -467,6 +467,29 @@ int ECCX08Class::lock()
   return 1;
 }
 
+int ECCX08Class::lockConfigZone()
+{
+  // Lock mode 0: the configuration zone.
+  return lock(0);
+}
+
+int ECCX08Class::lockDataZone()
+{
+  // Lock mode 1: the data and OTP zones.
+  return lock(1);
+}
+
+int ECCX08Class::lockSlot(int slot)
+{
+  if (slot < 0 || slot > 15) {
+    return 0;
+  }
+
+  // Lock mode 2 locks a single slot, with the slot number in bits 2-5. The slot's
+  // KeyConfig.Lockable must be 1 and the data zone must already be locked.
+  return lock(0x02 | (slot << 2));
+}
+
 
 int ECCX08Class::beginHMAC(uint16_t keySlot)
 {
@@ -998,7 +1021,7 @@ int ECCX08Class::write(int zone, int address, const byte buffer[], int length)
   return 1;
 }
 
-int ECCX08Class::lock(int zone)
+int ECCX08Class::lock(int mode)
 {
   uint8_t status;
 
@@ -1006,7 +1029,9 @@ int ECCX08Class::lock(int zone)
     return 0;
   }
 
-  if (!sendCommand(0x17, 0x80 | zone, 0x0000)) {
+  // Bit 7 of Mode tells the device to skip the CRC summary check of the zone
+  // contents, so no expected-contents CRC has to be supplied in Param2.
+  if (!sendCommand(0x17, 0x80 | mode, 0x0000)) {
     return 0;
   }
 
