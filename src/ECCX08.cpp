@@ -19,7 +19,16 @@
 
 #include <Arduino.h>
 
+#if defined(ARDUINO_ARCH_ESP8266)
+#include <twi.h>
+#endif
+
 #include "ECCX08.h"
+
+// The longest packet the driver sends. Verify(External) carries a 64 byte signature
+// and a 64 byte public key inside the 8 bytes of framing every command has, which is
+// 8 bytes past the 128 byte transmit buffer an Arduino Wire gives you by default.
+#define ECCX08_MAX_PACKET_SIZE (8 + 128)
 
 const uint32_t ECCX08Class::_wakeupFrequency = 100000u;  // 100 kHz
 #ifdef __AVR__
@@ -49,6 +58,11 @@ int ECCX08Class::begin(uint8_t i2cAddress)
 
 int ECCX08Class::begin()
 {
+#if defined(WIRE_HAS_BUFFER_SIZE)
+  // Asked for before begin(), which is where the buffer actually gets allocated.
+  _wire->setBufferSize(ECCX08_MAX_PACKET_SIZE);
+#endif
+
   _wire->begin();
 
   wakeup();
@@ -1074,11 +1088,29 @@ int ECCX08Class::sendCommand(uint8_t opcode, uint8_t param1, uint16_t param2, co
   uint16_t crc = crc16(&command[1], 8 - 3 + dataLength);
   memcpy(&command[6 + dataLength], &crc, sizeof(crc));
 
+#if defined(ARDUINO_ARCH_ESP8266)
+  // The ESP8266 core fixes its Wire transmit buffer at 128 bytes and offers no way to
+  // grow it, so a Verify(External) cannot go out through Wire at all. The low-level
+  // TWI call writes straight from the caller's buffer and has no such limit.
+  if (twi_writeTo(_address, command, commandLength, true) != 0) {
+    return 0;
+  }
+#else
   _wire->beginTransmission(_address);
-  _wire->write(command, commandLength);
+
+  // Wire quietly drops whatever will not fit its transmit buffer, and the chip ACKs
+  // the truncated packet, so endTransmission() still reports success. Left unchecked
+  // the device answers the short packet with a parse error, which reads back as an
+  // ordinary refusal and sends you looking at the wrong thing entirely.
+  if (_wire->write(command, commandLength) != (size_t)commandLength) {
+    _wire->endTransmission();
+    return 0;
+  }
+
   if (_wire->endTransmission() != 0) {
     return 0;
   }
+#endif
 
   return 1;
 }
