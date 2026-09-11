@@ -637,6 +637,7 @@ int ECCX08Class::generateEphemeralPublicKey(byte publicKey[])
   return 1;
 }
 
+// TODO: Add an ECDH variant that leaves the shared secret in TempKey (mode 0x09)
 int ECCX08Class::ecdh(int slot, const byte peerPublicKey[], byte sharedSecret[])
 {
   if (slot < 0 || slot > 15) {
@@ -1073,6 +1074,7 @@ int ECCX08Class::addressForSlotOffset(int slot, int offset)
   return (slot << 3) | (block << 8) | (offset);
 }
 
+// TODO: Replace each caller's fixed worst-case delay() with a polled read of the response
 int ECCX08Class::sendCommand(uint8_t opcode, uint8_t param1, uint16_t param2, const byte data[], size_t dataLength)
 {
   int commandLength = 8 + dataLength; // 1 for type, 1 for length, 1 for opcode, 1 for param1, 2 for param2, 2 for CRC
@@ -1115,6 +1117,7 @@ int ECCX08Class::sendCommand(uint8_t opcode, uint8_t param1, uint16_t param2, co
   return 1;
 }
 
+// TODO: Surface the device status byte instead of collapsing every result to 0/1
 int ECCX08Class::receiveResponse(void* response, size_t length)
 {
   int retries = 20;
