@@ -60,6 +60,9 @@ public:
   int writeConfiguration(const byte data[]=ECCX08_DEFAULT_TLS_CONFIG);
   int readConfiguration(byte data[]);
   int lock();
+  int lockConfigZone();
+  int lockDataZone();
+  int lockSlot(int slot);
 
   int beginHMAC(uint16_t keySlot);
   int updateHMAC(const byte data[], int length);
@@ -67,6 +70,12 @@ public:
   int endHMAC(const byte data[], int length, byte result[]);
 
   int nonce(const byte data[]);
+
+  int generateEphemeralPublicKey(byte publicKey[]);
+  int ecdh(int slot, const byte peerPublicKey[], byte sharedSecret[]);
+  int ecdhTempKey(const byte peerPublicKey[], byte sharedSecret[]);
+  int kdf(uint16_t keySlot, const byte message[], byte outputData[],
+          size_t messageLength = 32, uint8_t mode = 0x52);
 
   int incrementCounter(int counterId, long& counter);
   long incrementCounter(int counterId);
@@ -85,7 +94,7 @@ private:
 
   int read(int zone, int address, byte buffer[], int length);
   int write(int zone, int address, const byte buffer[], int length);
-  int lock(int zone);
+  int lock(int mode);
 
   int addressForSlotOffset(int slot, int offset);
 

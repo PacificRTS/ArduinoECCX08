@@ -19,7 +19,16 @@
 
 #include <Arduino.h>
 
+#if defined(ARDUINO_ARCH_ESP8266)
+#include <twi.h>
+#endif
+
 #include "ECCX08.h"
+
+// The longest packet the driver sends. Verify(External) carries a 64 byte signature
+// and a 64 byte public key inside the 8 bytes of framing every command has, which is
+// 8 bytes past the 128 byte transmit buffer an Arduino Wire gives you by default.
+#define ECCX08_MAX_PACKET_SIZE (8 + 128)
 
 const uint32_t ECCX08Class::_wakeupFrequency = 100000u;  // 100 kHz
 #ifdef __AVR__
@@ -46,6 +55,11 @@ int ECCX08Class::begin(uint8_t i2cAddress)
 
 int ECCX08Class::begin()
 {
+#if defined(WIRE_HAS_BUFFER_SIZE)
+  // Asked for before begin(), which is where the buffer actually gets allocated.
+  _wire->setBufferSize(ECCX08_MAX_PACKET_SIZE);
+#endif
+
   _wire->begin();
 
   wakeup();
@@ -234,18 +248,26 @@ int ECCX08Class::ecdsaVerify(const byte message[], const byte signature[], const
   return 1;
 }
 
+/*
+  Sign the 32 byte digest in message[] with the private key held in slot.
+
+  The digest is loaded into TempKey with a pass-through Nonce and then signed in
+  external message mode. That requires the slot's KeyConfig.ReqRandom to be 0: with
+  ReqRandom set, the device will only sign a TempKey it derived from its own RNG
+  output, so an externally agreed digest cannot be signed at all.
+
+  The discarded Random command that used to open this function has been removed. It
+  fed nothing: the pass-through Nonce below overwrites TempKey either way, and it
+  does not satisfy ReqRandom, which needs Nonce in random mode instead.
+*/
 int ECCX08Class::ecSign(int slot, const byte message[], byte signature[])
 {
-  byte rand[32];
-
-  if (!random(rand, sizeof(rand))) {
-    return 0;
-  }
-
+  // Load the digest to be signed into TempKey.
   if (!challenge(message)) {
     return 0;
   }
 
+  // Sign the contents of TempKey with the slot's private key.
   if (!sign(slot, signature)) {
     return 0;
   }
@@ -259,7 +281,7 @@ int ECCX08Class::SHA256(const uint8_t *buffer, size_t size, uint8_t *digest)
   uint8_t * cursor = (uint8_t*)buffer;
   uint32_t bytes_read = 0;
 
-  for(; bytes_read + 64 < size; bytes_read += 64, cursor += 64) {
+  for(; bytes_read + 64 <= size; bytes_read += 64, cursor += 64) {
     updateSHA256(cursor);
   }
   return endSHA256(cursor, size - bytes_read, digest);
@@ -456,6 +478,29 @@ int ECCX08Class::lock()
   return 1;
 }
 
+int ECCX08Class::lockConfigZone()
+{
+  // Lock mode 0: the configuration zone.
+  return lock(0);
+}
+
+int ECCX08Class::lockDataZone()
+{
+  // Lock mode 1: the data and OTP zones.
+  return lock(1);
+}
+
+int ECCX08Class::lockSlot(int slot)
+{
+  if (slot < 0 || slot > 15) {
+    return 0;
+  }
+
+  // Lock mode 2 locks a single slot, with the slot number in bits 2-5. The slot's
+  // KeyConfig.Lockable must be 1 and the data zone must already be locked.
+  return lock(0x02 | (slot << 2));
+}
+
 
 int ECCX08Class::beginHMAC(uint16_t keySlot)
 {
@@ -562,6 +607,133 @@ int ECCX08Class::endHMAC(const byte data[], int length, byte result[])
 int ECCX08Class::nonce(const byte data[])
 {
   return challenge(data);
+}
+
+int ECCX08Class::generateEphemeralPublicKey(byte publicKey[])
+{
+  if (!wakeup()) {
+    return 0;
+  }
+
+  if (!sendCommand(0x40, 0x04, 0xFFFF)) {
+    idle();
+    return 0;
+  }
+
+  // GenKey is relatively slow: 215 ms worst case.
+  delay(220);
+
+  if (!receiveResponse(publicKey, 64)) {
+    idle();
+    return 0;
+  }
+
+  delay(1);
+  idle();
+
+  return 1;
+}
+
+// TODO: Add an ECDH variant that leaves the shared secret in TempKey (mode 0x09)
+int ECCX08Class::ecdh(int slot, const byte peerPublicKey[], byte sharedSecret[])
+{
+  if (slot < 0 || slot > 15) {
+    return 0;
+  }
+
+  if (!wakeup()) {
+    return 0;
+  }
+
+  if (!sendCommand(0x43, 0x0C, (uint16_t)slot, peerPublicKey, 64)) {
+    idle();
+    return 0;
+  }
+
+  // ECDH takes up to 172 ms.
+  delay(180);
+
+  if (!receiveResponse(sharedSecret, 32)) {
+    idle();
+    return 0;
+  }
+
+  delay(1);
+  idle();
+
+  return 1;
+}
+
+int ECCX08Class::ecdhTempKey( const byte peerPublicKey[], byte sharedSecret[])
+{
+  if (!wakeup()) {
+    return 0;
+  }
+
+  if (!sendCommand(0x43, 0x0D, 0x0000, peerPublicKey, 64)) {
+    idle();
+    return 0;
+  }
+
+  // ECDH takes up to 172 ms.
+  delay(180);
+
+  if (!receiveResponse(sharedSecret, 32)) {
+    idle();
+    return 0;
+  }
+
+  delay(1);
+  idle();
+
+  return 1;
+}
+
+int ECCX08Class::kdf(uint16_t keySlot, const byte message[], byte outputData[], size_t messageLength, uint8_t mode)
+{
+  if (keySlot > 15) {
+    return 0;
+  }
+
+  // The message length is encoded in the MSB of Details, so it must fit in a byte,
+  // and the message itself has to fit in the data field of the KDF command.
+  if (message == NULL || messageLength == 0 || messageLength > 128) {
+    return 0;
+  }
+
+  if (!wakeup()) {
+    return 0;
+  }
+
+  byte data[4 + 128];
+
+  // Details[0..2]: algorithm specific options. For HKDF, bits 0-1 select where the
+  // message lives; 0x02 = "in the input parameter", i.e. the bytes appended below.
+  data[0] = 0x02;
+  data[1] = 0x00;
+  data[2] = 0x00;
+  // Details[3]: the message length in bytes, for every algorithm except AES.
+  data[3] = (byte)messageLength;
+
+  memcpy(&data[4], message, messageLength);
+
+  if (!sendCommand(0x56, mode, keySlot, data, 4 + messageLength)) {
+    idle();
+    return 0;
+  }
+
+  // KDF is the slowest command on the device: 165 ms worst case.
+  delay(170);
+
+  if (!receiveResponse(outputData, 32)) {
+    idle();
+    return 0;
+  }
+
+  delay(1);
+  idle();
+
+  return 1;
 }
 
 int ECCX08Class::incrementCounter(int counterId, long& counter)
@@ -755,7 +927,8 @@ int ECCX08Class::verify(const byte signature[], const byte pubkey[])
     return 0;
   }
 
-  delay(72);
+  // Verify takes up to 295 ms.
+  delay(300);
 
   if (!receiveResponse(&status, sizeof(status))) {
     return 0;
@@ -781,7 +954,8 @@ int ECCX08Class::sign(int slot, byte signature[])
     return 0;
   }
 
-  delay(70);
+  // Sign takes up to 220 ms.
+  delay(230);
 
   if (!receiveResponse(signature, 64)) {
     return 0;
@@ -859,7 +1033,7 @@ int ECCX08Class::write(int zone, int address, const byte buffer[], int length)
   return 1;
 }
 
-int ECCX08Class::lock(int zone)
+int ECCX08Class::lock(int mode)
 {
   uint8_t status;
 
@@ -867,7 +1041,9 @@ int ECCX08Class::lock(int zone)
     return 0;
   }
 
-  if (!sendCommand(0x17, 0x80 | zone, 0x0000)) {
+  // Bit 7 of Mode tells the device to skip the CRC summary check of the zone
+  // contents, so no expected-contents CRC has to be supplied in Param2.
+  if (!sendCommand(0x17, 0x80 | mode, 0x0000)) {
     return 0;
   }
 
@@ -895,6 +1071,7 @@ int ECCX08Class::addressForSlotOffset(int slot, int offset)
   return (slot << 3) | (block << 8) | (offset);
 }
 
+// TODO: Replace each caller's fixed worst-case delay() with a polled read of the response
 int ECCX08Class::sendCommand(uint8_t opcode, uint8_t param1, uint16_t param2, const byte data[], size_t dataLength)
 {
   int commandLength = 8 + dataLength; // 1 for type, 1 for length, 1 for opcode, 1 for param1, 2 for param2, 2 for CRC
@@ -910,15 +1087,34 @@ int ECCX08Class::sendCommand(uint8_t opcode, uint8_t param1, uint16_t param2, co
   uint16_t crc = crc16(&command[1], 8 - 3 + dataLength);
   memcpy(&command[6 + dataLength], &crc, sizeof(crc));
 
+#if defined(ARDUINO_ARCH_ESP8266)
+  // The ESP8266 core fixes its Wire transmit buffer at 128 bytes and offers no way to
+  // grow it, so a Verify(External) cannot go out through Wire at all. The low-level
+  // TWI call writes straight from the caller's buffer and has no such limit.
+  if (twi_writeTo(_address, command, commandLength, true) != 0) {
+    return 0;
+  }
+#else
   _wire->beginTransmission(_address);
-  _wire->write(command, commandLength);
+
+  // Wire quietly drops whatever will not fit its transmit buffer, and the chip ACKs
+  // the truncated packet, so endTransmission() still reports success. Left unchecked
+  // the device answers the short packet with a parse error, which reads back as an
+  // ordinary refusal and sends you looking at the wrong thing entirely.
+  if (_wire->write(command, commandLength) != (size_t)commandLength) {
+    _wire->endTransmission();
+    return 0;
+  }
+
   if (_wire->endTransmission() != 0) {
     return 0;
   }
+#endif
 
   return 1;
 }
 
+// TODO: Surface the device status byte instead of collapsing every result to 0/1
 int ECCX08Class::receiveResponse(void* response, size_t length)
 {
   int retries = 20;
