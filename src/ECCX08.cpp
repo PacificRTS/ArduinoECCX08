@@ -277,12 +277,19 @@ int ECCX08Class::ecSign(int slot, const byte message[], byte signature[])
 
 int ECCX08Class::SHA256(const uint8_t *buffer, size_t size, uint8_t *digest)
 {
-  beginSHA256();
+  // A step that fails leaves the device's SHA context short of data, and the digest
+  // it ends with is then simply wrong, so stop at the first failure.
+  if (!beginSHA256()) {
+    return 0;
+  }
+
   uint8_t * cursor = (uint8_t*)buffer;
   uint32_t bytes_read = 0;
 
   for(; bytes_read + 64 <= size; bytes_read += 64, cursor += 64) {
-    updateSHA256(cursor);
+    if (!updateSHA256(cursor)) {
+      return 0;
+    }
   }
   return endSHA256(cursor, size - bytes_read, digest);
 }
@@ -299,7 +306,8 @@ int ECCX08Class::beginSHA256()
     return 0;
   }
 
-  delay(9);
+  // SHA takes up to 36 ms.
+  delay(36);
 
   if (!receiveResponse(&status, sizeof(status))) {
     return 0;
@@ -327,7 +335,8 @@ int ECCX08Class::updateSHA256(const byte data[])
     return 0;
   }
 
-  delay(9);
+  // SHA takes up to 36 ms.
+  delay(36);
 
   if (!receiveResponse(&status, sizeof(status))) {
     return 0;
@@ -358,7 +367,8 @@ int ECCX08Class::endSHA256(const byte data[], int length, byte result[])
     return 0;
   }
 
-  delay(9);
+  // SHA takes up to 36 ms.
+  delay(36);
 
   if (!receiveResponse(result, 32)) {
     return 0;
@@ -521,7 +531,8 @@ int ECCX08Class::beginHMAC(uint16_t keySlot)
     return 0;
   }
 
-  delay(9);
+  // SHA takes up to 36 ms.
+  delay(36);
 
   if (!receiveResponse(&status, sizeof(status))) {
     return 0;
@@ -560,7 +571,8 @@ int ECCX08Class::updateHMAC(const byte data[], int length) {
       return 0;
     }
 
-    delay(9);
+    // SHA takes up to 36 ms.
+    delay(36);
 
     if (!receiveResponse(&status, sizeof(status))) {
       return 0;
@@ -592,7 +604,8 @@ int ECCX08Class::endHMAC(const byte data[], int length, byte result[])
     return 0;
   }
 
-  delay(9);
+  // SHA takes up to 36 ms.
+  delay(36);
 
   if (!receiveResponse(result, 32)) {
     return 0;
@@ -750,7 +763,8 @@ int ECCX08Class::incrementCounter(int counterId, long& counter)
     return 0;
   }
 
-  delay(20);
+  // Counter takes up to 25 ms.
+  delay(25);
 
   if (!receiveResponse(&counter, sizeof(counter))) {
     return 0;
@@ -787,7 +801,8 @@ int ECCX08Class::readCounter(int counterId, long& counter)
     return 0;
   }
 
-  delay(20);
+  // Counter takes up to 25 ms.
+  delay(25);
 
   if (!receiveResponse(&counter, sizeof(counter))) {
     return 0;
@@ -869,7 +884,8 @@ long ECCX08Class::version()
     return 0;
   }
 
-  delay(2);
+  // Info takes up to 5 ms.
+  delay(5);
 
   if (!receiveResponse(&version, sizeof(version))) {
     return 0;
@@ -1017,7 +1033,8 @@ int ECCX08Class::write(int zone, int address, const byte buffer[], int length)
     return 0;
   }
 
-  delay(26);
+  // Write takes up to 45 ms.
+  delay(45);
 
   if (!receiveResponse(&status, sizeof(status))) {
     return 0;
@@ -1047,7 +1064,8 @@ int ECCX08Class::lock(int mode)
     return 0;
   }
 
-  delay(32);
+  // Lock takes up to 35 ms.
+  delay(35);
 
   if (!receiveResponse(&status, sizeof(status))) {
     return 0;
